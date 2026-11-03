@@ -1,1 +1,531 @@
-<h1>Teste</h1>
+<!DOCTYPE html>
+<html lang="pt-BR">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<title>Tibia-like Prototype</title>
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body {
+    width: 100%; height: 100%;
+    background: #111;
+    color: #eee;
+    font-family: monospace;
+    overflow: hidden;
+    touch-action: none;
+  }
+  #gameWrap {
+    position: relative;
+    width: 100vw; height: 100vh;
+    display: flex; align-items: center; justify-content: center;
+  }
+  canvas {
+    display: block;
+    image-rendering: pixelated;
+    background: #2a2a2a;
+    touch-action: none;
+  }
+  #hud {
+    position: absolute;
+    top: 6px; left: 6px;
+    font-size: 12px;
+    line-height: 1.5;
+    background: rgba(0,0,0,0.65);
+    padding: 6px 8px;
+    border-radius: 6px;
+    pointer-events: none;
+    white-space: pre;
+    font-size: 11px;
+  }
+  #classPicker {
+    position: absolute;
+    inset: 0;
+    background: rgba(0,0,0,0.85);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 14px;
+    z-index: 10;
+    padding: 20px;
+  }
+  #classPicker h1 { font-size: 18px; color: #f5c542; }
+  #classPicker p { font-size: 12px; color: #aaa; text-align: center; max-width: 320px; }
+  .classBtn {
+    width: 220px;
+    padding: 14px;
+    border: 2px solid #555;
+    border-radius: 8px;
+    background: #222;
+    color: #eee;
+    font-family: monospace;
+    font-size: 14px;
+    cursor: pointer;
+  }
+  .classBtn:active { background: #333; }
+  .classBtn.melee { border-color: #d9534f; }
+  .classBtn.archer { border-color: #5cb85c; }
+  .classBtn.mage { border-color: #5bc0de; }
+  #controls {
+    position: absolute;
+    bottom: 8px; left: 50%;
+    transform: translateX(-50%);
+    display: flex;
+    gap: 8px;
+    z-index: 5;
+  }
+  #controls button {
+    padding: 10px 16px;
+    background: rgba(30,30,30,0.85);
+    color: #eee;
+    border: 1px solid #555;
+    border-radius: 6px;
+    font-family: monospace;
+    font-size: 12px;
+  }
+  #controls button:active { background: rgba(70,70,70,0.95); }
+  #attackBtn { border-color: #f5c542 !important; }
+  #dpad {
+    position: absolute;
+    bottom: 60px; left: 50%;
+    transform: translateX(-50%);
+    display: grid;
+    grid-template-columns: repeat(3, 48px);
+    grid-template-rows: repeat(3, 48px);
+    gap: 4px;
+    z-index: 5;
+  }
+  #dpad button {
+    background: rgba(30,30,30,0.8);
+    color: #eee;
+    border: 1px solid #555;
+    border-radius: 6px;
+    font-size: 18px;
+  }
+  #dpad button:active { background: rgba(80,80,80,0.95); }
+  .empty { visibility: hidden; }
+</style>
+</head>
+<body>
+<div id="gameWrap">
+  <canvas id="c"></canvas>
+
+  <div id="hud"></div>
+
+  <div id="dpad">
+    <button class="empty"></button>
+    <button data-dir="up">▲</button>
+    <button class="empty"></button>
+    <button data-dir="left">◀</button>
+    <button class="empty"></button>
+    <button data-dir="right">▶</button>
+    <button class="empty"></button>
+    <button data-dir="down">▼</button>
+    <button class="empty"></button>
+  </div>
+
+  <div id="controls">
+    <button id="attackBtn">ATACAR</button>
+    <button id="pickupBtn">COLETAR</button>
+  </div>
+
+  <div id="classPicker">
+    <h1>Escolha sua classe</h1>
+    <p>Melee: ataca 8 ao redor · Arqueiro: até 4 à distância · Mago: área de fogo</p>
+    <button class="classBtn melee" data-class="melee">⚔️ Melee</button>
+    <button class="classBtn archer" data-class="archer">🏹 Arqueiro</button>
+    <button class="classBtn mage" data-class="mage">🔥 Mago</button>
+  </div>
+</div>
+
+<script>
+(() => {
+'use strict';
+
+// ============ CONFIG ============
+const TILE = 32;
+const VIEW_TILES_X = 15;
+const VIEW_TILES_Y = 11;
+const MAP_W = 40;
+const MAP_H = 30;
+
+const canvas = document.getElementById('c');
+const ctx = canvas.getContext('2d');
+const hud = document.getElementById('hud');
+const classPicker = document.getElementById('classPicker');
+
+function resize() {
+  const w = Math.min(window.innerWidth, VIEW_TILES_X * TILE);
+  const h = Math.min(window.innerHeight, VIEW_TILES_Y * TILE);
+  canvas.width = VIEW_TILES_X * TILE;
+  canvas.height = VIEW_TILES_Y * TILE;
+  const scale = Math.min(window.innerWidth / canvas.width, window.innerHeight / canvas.height);
+  canvas.style.width = (canvas.width * scale) + 'px';
+  canvas.style.height = (canvas.height * scale) + 'px';
+}
+window.addEventListener('resize', resize);
+resize();
+
+// ============ MAP ============
+// 0 grama, 1 parede, 2 água, 3 caminho
+const map = [];
+function generateMap() {
+  for (let y = 0; y < MAP_H; y++) {
+    const row = [];
+    for (let x = 0; x < MAP_W; x++) {
+      if (x === 0 || y === 0 || x === MAP_W - 1 || y === MAP_H - 1) row.push(1);
+      else row.push(0);
+    }
+    map.push(row);
+  }
+  // alguns obstáculos
+  const obstacles = [
+    [5,5],[6,5],[5,6],
+    [10,8],[11,8],[12,8],
+    [20,10],[20,11],[20,12],
+    [30,20],[31,20],[32,20],
+    [15,20],[15,21],[15,22],
+    [25,5],[26,5],[27,5]
+  ];
+  obstacles.forEach(([x,y]) => { if (map[y] && map[y][x] !== undefined) map[y][x] = 1; });
+  // água
+  for (let y = 14; y < 18; y++) for (let x = 24; x < 30; x++) map[y][x] = 2;
+}
+generateMap();
+
+function isWalkable(x, y) {
+  if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return false;
+  return map[y][x] === 0 || map[y][x] === 3;
+}
+
+// ============ ENTITIES ============
+let player = null;
+let monsters = [];
+let drops = [];
+let dummy = { x: 3, y: 3, hp: 1, maxHp: 1, isDummy: true };
+
+const CLASS_CONFIG = {
+  melee:  { name: 'Melee',  color: '#d9534f', hp: 120, atk: 8,  range: 1, targets: 8, xp: 0, level: 1, skill: 10, skillXp: 0, gold: 0 },
+  archer: { name: 'Arqueiro', color: '#5cb85c', hp: 90,  atk: 6,  range: 4, targets: 4, xp: 0, level: 1, skill: 10, skillXp: 0, gold: 0 },
+  mage:   { name: 'Mago',   color: '#5bc0de', hp: 70,  atk: 5,  range: 3, targets: 99, xp: 0, level: 1, skill: 10, skillXp: 0, gold: 0 }
+};
+
+function startGame(classKey) {
+  const cfg = CLASS_CONFIG[classKey];
+  player = {
+    x: 8, y: 8,
+    classKey,
+    name: cfg.name,
+    color: cfg.color,
+    hp: cfg.hp, maxHp: cfg.hp,
+    atk: cfg.atk,
+    range: cfg.range,
+    targets: cfg.targets,
+    xp: 0, level: 1,
+    xpToNext: 50,
+    skill: cfg.skill, skillXp: 0,
+    gold: 0,
+    attackCooldown: 0,
+    facing: { x: 0, y: 1 }
+  };
+  monsters = [];
+  drops = [];
+  spawnMonsters(6);
+  classPicker.style.display = 'none';
+  updateHUD();
+}
+
+function spawnMonsters(n) {
+  for (let i = 0; i < n; i++) {
+    let attempts = 0;
+    while (attempts++ < 50) {
+      const x = 2 + Math.floor(Math.random() * (MAP_W - 4));
+      const y = 2 + Math.floor(Math.random() * (MAP_H - 4));
+      if (!isWalkable(x, y)) continue;
+      if (player && Math.abs(x - player.x) + Math.abs(y - player.y) < 5) continue;
+      if (monsters.some(m => m.x === x && m.y === y)) continue;
+      monsters.push({
+        x, y,
+        hp: 30, maxHp: 30,
+        atk: 4,
+        color: '#8b5a2b',
+        xpReward: 15,
+        goldReward: 3,
+        attackCooldown: 0
+      });
+      break;
+    }
+  }
+}
+
+// ============ INPUT ============
+const keys = {};
+window.addEventListener('keydown', e => { keys[e.key.toLowerCase()] = true; });
+window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
+
+document.querySelectorAll('#dpad button[data-dir]').forEach(btn => {
+  btn.addEventListener('pointerdown', e => {
+    e.preventDefault();
+    if (!player) return;
+    const dir = btn.dataset.dir;
+    const map = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
+    const [dx, dy] = map[dir];
+    tryMove(dx, dy);
+  });
+});
+
+document.getElementById('attackBtn').addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (player) doAttack();
+});
+
+document.getElementById('pickupBtn').addEventListener('pointerdown', e => {
+  e.preventDefault();
+  if (player) doPickup();
+});
+
+document.querySelectorAll('.classBtn').forEach(btn => {
+  btn.addEventListener('click', () => startGame(btn.dataset.class));
+});
+
+// ============ PLAYER ACTIONS ============
+let lastMoveTime = 0;
+const MOVE_DELAY = 140;
+
+function tryMove(dx, dy) {
+  const now = performance.now();
+  if (now - lastMoveTime < MOVE_DELAY) return;
+  lastMoveTime = now;
+  player.facing = { x: dx, y: dy };
+  const nx = player.x + dx;
+  const ny = player.y + dy;
+  if (!isWalkable(nx, ny)) return;
+  if (monsters.some(m => m.x === nx && m.y === ny)) return;
+  player.x = nx;
+  player.y = ny;
+}
+
+function doAttack() {
+  if (!player) return;
+  const now = performance.now();
+  if (now - player.attackCooldown < 400) return;
+  player.attackCooldown = now;
+
+  let targetsHit = 0;
+
+  if (player.classKey === 'melee') {
+    // 8 ao redor
+    for (let dy = -1; dy <= 1; dy++) {
+      for (let dx = -1; dx <= 1; dx++) {
+        if (dx === 0 && dy === 0) continue;
+        const tx = player.x + dx;
+        const ty = player.y + dy;
+        const mon = monsters.find(m => m.x === tx && m.y === ty);
+        if (mon) { hitMonster(mon); targetsHit++; }
+        if (tx === dummy.x && ty === dummy.y) { hitDummy(); targetsHit++; }
+      }
+    }
+  } else if (player.classKey === 'archer') {
+    // até 4 mais próximos dentro do range
+    const inRange = monsters
+      .map(m => ({ m, d: Math.abs(m.x - player.x) + Math.abs(m.y - player.y) }))
+      .filter(o => o.d <= player.range)
+      .sort((a, b) => a.d - b.d)
+      .slice(0, player.targets);
+    inRange.forEach(o => { hitMonster(o.m); targetsHit++; });
+  } else if (player.classKey === 'mage') {
+    // área de fogo em frente (alcance range), raio 2
+    const cx = player.x + player.facing.x * 2;
+    const cy = player.y + player.facing.y * 2;
+    monsters.forEach(m => {
+      if (Math.abs(m.x - cx) <= 2 && Math.abs(m.y - cy) <= 2) { hitMonster(m); targetsHit++; }
+    });
+  }
+
+  if (targetsHit > 0) {
+    gainSkillXp(targetsHit * 2);
+  }
+  updateHUD();
+}
+
+function hitMonster(mon) {
+  const dmg = player.atk + Math.floor(player.skill / 5);
+  mon.hp -= dmg;
+  if (mon.hp <= 0) {
+    const idx = monsters.indexOf(mon);
+    if (idx >= 0) monsters.splice(idx, 1);
+    gainXP(mon.xpReward);
+    player.gold += mon.goldReward;
+    if (Math.random() < 0.5) {
+      drops.push({ x: mon.x, y: mon.y, gold: mon.goldReward, name: 'gold' });
+    }
+    spawnMonsters(1);
+  }
+}
+
+function hitDummy() {
+  gainSkillXp(1);
+}
+
+function doPickup() {
+  if (!player) return;
+  const idx = drops.findIndex(d => d.x === player.x && d.y === player.y);
+  if (idx >= 0) {
+    player.gold += drops[idx].gold;
+    drops.splice(idx, 1);
+    updateHUD();
+  }
+}
+
+function gainXP(amount) {
+  player.xp += amount;
+  while (player.xp >= player.xpToNext) {
+    player.xp -= player.xpToNext;
+    player.level++;
+    player.maxHp += 15;
+    player.hp = player.maxHp;
+    player.atk += 2;
+    player.xpToNext = Math.floor(player.xpToNext * 1.5);
+  }
+}
+
+function gainSkillXp(amount) {
+  player.skillXp += amount;
+  while (player.skillXp >= player.skill * 5) {
+    player.skillXp -= player.skill * 5;
+    player.skill++;
+  }
+}
+
+// ============ MONSTER AI ============
+let lastMonsterTick = 0;
+function updateMonsters(dt) {
+  if (performance.now() - lastMonsterTick < 700) return;
+  lastMonsterTick = performance.now();
+
+  monsters.forEach(m => {
+    const dx = player.x - m.x;
+    const dy = player.y - m.y;
+    const dist = Math.abs(dx) + Math.abs(dy);
+    if (dist === 1) {
+      player.hp -= m.atk;
+      if (player.hp <= 0) {
+        player.hp = player.maxHp;
+        player.x = 8; player.y = 8;
+      }
+      return;
+    }
+    if (dist < 8) {
+      let sx = 0, sy = 0;
+      if (Math.abs(dx) > Math.abs(dy)) sx = Math.sign(dx);
+      else sy = Math.sign(dy);
+      const nx = m.x + sx;
+      const ny = m.y + sy;
+      if (isWalkable(nx, ny) &&
+          !monsters.some(o => o !== m && o.x === nx && o.y === ny) &&
+          !(player.x === nx && player.y === ny)) {
+        m.x = nx; m.y = ny;
+      }
+    }
+  });
+}
+
+// ============ RENDER ============
+let cameraX = 0, cameraY = 0;
+
+function updateCamera() {
+  const halfW = VIEW_TILES_X / 2;
+  const halfH = VIEW_TILES_Y / 2;
+  cameraX = player.x - halfW + 0.5;
+  cameraY = player.y - halfH + 0.5;
+  cameraX = Math.max(0, Math.min(MAP_W - VIEW_TILES_X, cameraX));
+  cameraY = Math.max(0, Math.min(MAP_H - VIEW_TILES_Y, cameraY));
+}
+
+const TILE_COLORS = { 0: '#3a6b3a', 1: '#555', 2: '#2a4a7a', 3: '#7a6a4a' };
+
+function draw() {
+  ctx.fillStyle = '#111';
+  ctx.fillRect(0, 0, canvas.width, canvas.height);
+
+  if (!player) return;
+
+  updateCamera();
+  const offX = -cameraX * TILE;
+  const offY = -cameraY * TILE;
+
+  // tiles
+  for (let y = Math.floor(cameraY); y < Math.ceil(cameraY + VIEW_TILES_Y); y++) {
+    for (let x = Math.floor(cameraX); x < Math.ceil(cameraX + VIEW_TILES_X); x++) {
+      if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) continue;
+      const t = map[y][x];
+      ctx.fillStyle = TILE_COLORS[t];
+      ctx.fillRect(x * TILE + offX, y * TILE + offY, TILE, TILE);
+      ctx.strokeStyle = 'rgba(0,0,0,0.15)';
+      ctx.strokeRect(x * TILE + offX, y * TILE + offY, TILE, TILE);
+    }
+  }
+
+  // drops
+  drops.forEach(d => {
+    ctx.fillStyle = '#f5c542';
+    ctx.beginPath();
+    ctx.arc(d.x * TILE + offX + TILE/2, d.y * TILE + offY + TILE/2, 6, 0, Math.PI*2);
+    ctx.fill();
+  });
+
+  // dummy
+  drawEntity(dummy.x, dummy.y, offX, offY, '#a08050', 'D');
+
+  // monsters
+  monsters.forEach(m => drawEntity(m.x, m.y, offX, offY, m.color, 'M', m.hp / m.maxHp));
+
+  // player
+  drawEntity(player.x, player.y, offX, offY, player.color, 'P', player.hp / player.maxHp);
+}
+
+function drawEntity(x, y, offX, offY, color, letter, hpRatio) {
+  const px = x * TILE + offX;
+  const py = y * TILE + offY;
+  ctx.fillStyle = color;
+  ctx.fillRect(px + 3, py + 3, TILE - 6, TILE - 6);
+  ctx.fillStyle = '#fff';
+  ctx.font = 'bold 14px monospace';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(letter, px + TILE/2, py + TILE/2);
+  if (hpRatio !== undefined && hpRatio < 1) {
+    ctx.fillStyle = '#000';
+    ctx.fillRect(px + 4, py + 1, TILE - 8, 3);
+    ctx.fillStyle = '#e74c3c';
+    ctx.fillRect(px + 4, py + 1, (TILE - 8) * hpRatio, 3);
+  }
+}
+
+// ============ HUD ============
+function updateHUD() {
+  if (!player) return;
+  hud.textContent =
+    `${player.name}  Nv ${player.level}\n` +
+    `HP: ${player.hp}/${player.maxHp}\n` +
+    `XP: ${player.xp}/${player.xpToNext}\n` +
+    `Skill: ${player.skill} (${player.skillXp}/${player.skill*5})\n` +
+    `Gold: ${player.gold}`;
+}
+
+// ============ LOOP ============
+let lastTime = 0;
+function loop(t) {
+  const dt = t - lastTime;
+  lastTime = t;
+  if (player) updateMonsters(dt);
+  draw();
+  updateHUD();
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
+</script>
+</body>
+</html>
