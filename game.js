@@ -13,15 +13,19 @@ const ctx = canvas.getContext('2d');
 const hud = document.getElementById('hud');
 const logEl = document.getElementById('log');
 const classPicker = document.getElementById('classPicker');
-const dpad = document.getElementById('dpad');
-const controls = document.getElementById('controls');
 
-const IS_TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
+function hideOldControls() {
+  const dpad = document.getElementById('dpad');
+  const controls = document.getElementById('controls');
+  if (dpad) dpad.style.display = 'none';
+  if (controls) controls.style.display = 'none';
+}
+hideOldControls();
 
 function resize() {
   canvas.width = VIEW_TILES_X * TILE;
   canvas.height = VIEW_TILES_Y * TILE;
-  const scale = Math.min(window.innerWidth / canvas.width, window.innerHeight / canvas.height, IS_TOUCH ? 1.6 : 1.2);
+  const scale = Math.min(window.innerWidth / canvas.width, window.innerHeight / canvas.height, 1.8);
   canvas.style.width = (canvas.width * scale) + 'px';
   canvas.style.height = (canvas.height * scale) + 'px';
 }
@@ -66,43 +70,8 @@ let floaters = [];
 let particles = [];
 let dummy = { x: 3, y: 3, hitFlash: 0 };
 let running = false;
-
-// ============ INPUT ============
-const keys = {};
-window.addEventListener('keydown', e => {
-  const k = e.key.toLowerCase();
-  keys[k] = true;
-  if (k === ' ' || k === 'enter') { e.preventDefault(); doAttack(); }
-  if (k === 'e') doPickup();
-  if (k === 'arrowup' || k === 'w') { e.preventDefault(); tryMove(0,-1); }
-  if (k === 'arrowdown' || k === 's') { e.preventDefault(); tryMove(0,1); }
-  if (k === 'arrowleft' || k === 'a') { e.preventDefault(); tryMove(-1,0); }
-  if (k === 'arrowright' || k === 'd') { e.preventDefault(); tryMove(1,0); }
-});
-window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
-
-document.querySelectorAll('#dpad button[data-dir]').forEach(btn => {
-  btn.addEventListener('pointerdown', e => {
-    e.preventDefault();
-    if (!player) return;
-    const m = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
-    const [dx, dy] = m[btn.dataset.dir];
-    tryMove(dx, dy);
-  });
-});
-
-document.getElementById('attackBtn').addEventListener('pointerdown', e => {
-  e.preventDefault();
-  if (player) doAttack();
-});
-document.getElementById('pickupBtn').addEventListener('pointerdown', e => {
-  e.preventDefault();
-  if (player) doPickup();
-});
-
-document.querySelectorAll('.classBtn').forEach(btn => {
-  btn.addEventListener('click', () => startGame(btn.dataset.class));
-});
+let movePath = [];       // fila de passos do player
+let pendingTarget = null; // monstro que o player quer atacar
 
 // ============ CLASSES ============
 const CLASS_CONFIG = {
@@ -130,10 +99,12 @@ function startGame(classKey) {
   drops = [];
   floaters = [];
   particles = [];
+  movePath = [];
+  pendingTarget = null;
   spawnMonsters(6);
   classPicker.style.display = 'none';
   running = true;
-  logMsg('Bem-vindo, ' + cfg.name + '!');
+  logMsg('Toque no chão para andar · toque em monstro para atacar');
   updateHUD();
 }
 
@@ -156,24 +127,123 @@ function spawnMonsters(n) {
   }
 }
 
-// ============ PLAYER ACTIONS ============
-let lastMoveTime = 0;
-const MOVE_DELAY = 130;
+document.querySelectorAll('.classBtn').forEach(btn => {
+  btn.addEventListener('click', () => startGame(btn.dataset.class));
+});
 
-function tryMove(dx, dy) {
-  if (!player) return;
-  const now = performance.now();
-  if (now - lastMoveTime < MOVE_DELAY) return;
-  lastMoveTime = now;
-  player.facing = { x: dx, y: dy };
-  const nx = player.x + dx, ny = player.y + dy;
-  if (!isWalkable(nx, ny)) return;
-  if (monsters.some(m => m.x === nx && m.y === ny)) return;
-  player.x = nx; player.y = ny;
-  const idx = drops.findIndex(d => d.x === nx && d.y === ny);
-  if (idx >= 0) doPickup();
+// ============ INPUT (touch / click) ============
+function canvasTileFromEvent(e) {
+  const rect = canvas.getBoundingClientRect();
+  const scaleX = canvas.width / rect.width;
+  const scaleY = canvas.height / rect.height;
+  const cx = (e.clientX - rect.left) * scaleX;
+  const cy = (e.clientY - rect.top) * scaleY;
+  const tx = Math.floor(cx / TILE + cameraX);
+  const ty = Math.floor(cy / TILE + cameraY);
+  return { tx, ty };
 }
 
+function handleTap(e) {
+  e.preventDefault();
+  if (!player || !running) return;
+  const { tx, ty } = canvasTileFromEvent(e);
+  if (tx < 0 || ty < 0 || tx >= MAP_W || ty >= MAP_H) return;
+
+  // clicou no dummy?
+  if (tx === dummy.x && ty === dummy.y) {
+    pendingTarget = { isDummy: true };
+    movePath = [];
+    approachAndAttack();
+    return;
+  }
+
+  // clicou em monstro?
+  const mon = monsters.find(m => m.x === tx && m.y === ty);
+  if (mon) {
+    pendingTarget = mon;
+    movePath = [];
+    approachAndAttack();
+    return;
+  }
+
+  // clicou no chão
+  if (isWalkable(tx, ty)) {
+    pendingTarget = null;
+    const path = findPath(player.x, player.y, tx, ty);
+    if (path.length > 0) movePath = path;
+  }
+}
+
+canvas.addEventListener('pointerdown', handleTap);
+
+// ============ PATHFINDING (BFS simples) ============
+function findPath(sx, sy, tx, ty) {
+  if (sx === tx && sy === ty) return [];
+  const visited = new Set();
+  const queue = [{ x: sx, y: sy, path: [] }];
+  visited.add(sx + ',' + sy);
+  const dirs = [[0,-1],[0,1],[-1,0],[1,0]];
+
+  while (queue.length) {
+    const cur = queue.shift();
+    for (const [dx, dy] of dirs) {
+      const nx = cur.x + dx, ny = cur.y + dy;
+      if (!isWalkable(nx, ny)) continue;
+      if (monsters.some(m => m.x === nx && m.y === ny)) continue;
+      if (nx === dummy.x && ny === dummy.y) continue;
+      const key = nx + ',' + ny;
+      if (visited.has(key)) continue;
+      visited.add(key);
+      const newPath = cur.path.concat([{ x: nx, y: ny }]);
+      if (nx === tx && ny === ty) return newPath;
+      queue.push({ x: nx, y: ny, path: newPath });
+    }
+  }
+  return [];
+}
+
+// ============ APPROACH + ATTACK ============
+function approachAndAttack() {
+  if (!pendingTarget) return;
+  const target = pendingTarget.isDummy ? dummy : pendingTarget;
+  if (!target || (pendingTarget.isDummy === false && monsters.indexOf(target) < 0)) {
+    pendingTarget = null;
+    return;
+  }
+  const dx = target.x - player.x;
+  const dy = target.y - player.y;
+  const dist = Math.abs(dx) + Math.abs(dy);
+
+  if (dist <= player.range) {
+    // está no alcance: ataca
+    player.facing = { x: Math.sign(dx), y: Math.sign(dy) };
+    doAttack();
+    if (pendingTarget.isDummy) pendingTarget = null;
+    else {
+      // continua atacando até o alvo morrer
+      pendingTarget = target;
+    }
+    return;
+  }
+
+  // fora do alcance: anda em direção ao alvo
+  let sx = 0, sy = 0;
+  if (Math.abs(dx) > Math.abs(dy)) sx = Math.sign(dx);
+  else sy = Math.sign(dy);
+  const nx = player.x + sx, ny = player.y + sy;
+  if (isWalkable(nx, ny) && !monsters.some(m => m.x === nx && m.y === ny)) {
+    player.facing = { x: sx, y: sy };
+    player.x = nx; player.y = ny;
+    autoPickup();
+  } else {
+    // tenta caminho alternativo
+    const path = findPath(player.x, player.y, target.x, target.y);
+    if (path.length > 0) movePath = path;
+    else pendingTarget = null;
+  }
+}
+
+// ============ ATTACK ============
 function doAttack() {
   if (!player) return;
   const now = performance.now();
@@ -231,8 +301,6 @@ function doAttack() {
   if (hitCount > 0) {
     gainSkillXp(hitCount * 3);
     logMsg(`Acertou ${hitCount} alvo(s) — ${totalDmg} dano`);
-  } else {
-    logMsg('Nenhum alvo no alcance');
   }
   updateHUD();
 }
@@ -259,11 +327,11 @@ function killMonster(mon) {
       life: 500, age: 0, color: '#ff8b3d'
     });
   }
+  if (pendingTarget === mon) pendingTarget = null;
   spawnMonsters(1);
 }
 
-function doPickup() {
-  if (!player) return;
+function autoPickup() {
   const idx = drops.findIndex(d => d.x === player.x && d.y === player.y);
   if (idx >= 0) {
     player.gold += drops[idx].gold;
@@ -298,6 +366,22 @@ function gainSkillXp(amount) {
   updateHUD();
 }
 
+// ============ MOVIMENTO POR PATH ============
+let lastStepTime = 0;
+const STEP_DELAY = 140;
+
+function updateMovement(now) {
+  if (movePath.length === 0) return;
+  if (now - lastStepTime < STEP_DELAY) return;
+  lastStepTime = now;
+  const next = movePath.shift();
+  if (!isWalkable(next.x, next.y)) { movePath = []; return; }
+  if (monsters.some(m => m.x === next.x && m.y === next.y)) { movePath = []; return; }
+  player.facing = { x: next.x - player.x, y: next.y - player.y };
+  player.x = next.x; player.y = next.y;
+  autoPickup();
+}
+
 // ============ MONSTER AI ============
 let lastMonsterTick = 0;
 function updateMonsters() {
@@ -316,6 +400,8 @@ function updateMonsters() {
         logMsg('Você morreu... renascendo.');
         player.hp = player.maxHp;
         player.x = 8; player.y = 8;
+        movePath = [];
+        pendingTarget = null;
       }
       updateHUD();
       return;
@@ -333,6 +419,11 @@ function updateMonsters() {
       }
     }
   });
+
+  // se o alvo saiu do alcance enquanto ataca, recomeça aproximação
+  if (pendingTarget && !pendingTarget.isDummy) {
+    if (monsters.indexOf(pendingTarget) < 0) pendingTarget = null;
+  }
 }
 
 // ============ RENDER ============
@@ -366,6 +457,8 @@ function draw(now) {
       ctx.strokeRect(px+0.5, py+0.5, TILE-1, TILE-1);
     }
   }
+
+  // destacar tile sob o dedo/mouse é opcional; omitido para simplicidade
 
   drops.forEach(d => {
     const px = d.x * TILE + offX + TILE/2;
@@ -457,24 +550,16 @@ function logMsg(msg) {
   logTimer = setTimeout(() => logEl.classList.remove('show'), 1800);
 }
 
-// ============ SHOW/HIDE CONTROLS BY DEVICE ============
-function setupDeviceUI() {
-  if (IS_TOUCH) {
-    dpad.style.display = 'grid';
-    controls.style.display = 'flex';
-  } else {
-    dpad.style.display = 'none';
-    controls.style.display = 'flex'; // ainda mostra botões para mouse
-    logMsg('Use setas/WASD para andar · Espaço para atacar · E para coletar');
-  }
-}
-setupDeviceUI();
-
 // ============ LOOP ============
 let lastTime = 0;
 function loop(t) {
-  if (running && player) updateMonsters();
-  draw(t || 0);
+  const now = t || performance.now();
+  if (running && player) {
+    updateMonsters();
+    updateMovement(now);
+    if (pendingTarget) approachAndAttack();
+  }
+  draw(now);
   requestAnimationFrame(loop);
 }
 requestAnimationFrame(loop);
