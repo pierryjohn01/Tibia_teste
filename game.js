@@ -13,11 +13,15 @@ const ctx = canvas.getContext('2d');
 const hud = document.getElementById('hud');
 const logEl = document.getElementById('log');
 const classPicker = document.getElementById('classPicker');
+const dpad = document.getElementById('dpad');
+const controls = document.getElementById('controls');
+
+const IS_TOUCH = ('ontouchstart' in window) || navigator.maxTouchPoints > 0;
 
 function resize() {
   canvas.width = VIEW_TILES_X * TILE;
   canvas.height = VIEW_TILES_Y * TILE;
-  const scale = Math.min(window.innerWidth / canvas.width, window.innerHeight / canvas.height, 1.6);
+  const scale = Math.min(window.innerWidth / canvas.width, window.innerHeight / canvas.height, IS_TOUCH ? 1.6 : 1.2);
   canvas.style.width = (canvas.width * scale) + 'px';
   canvas.style.height = (canvas.height * scale) + 'px';
 }
@@ -26,45 +30,41 @@ resize();
 
 // ============ MAP ============
 const map = [];
-const MAP_TILES = { GRASS: 0, WALL: 1, WATER: 2, PATH: 3 };
+const T_GRASS = 0, T_WALL = 1, T_WATER = 2, T_PATH = 3;
 
 function generateMap() {
   for (let y = 0; y < MAP_H; y++) {
     const row = [];
     for (let x = 0; x < MAP_W; x++) {
-      if (x === 0 || y === 0 || x === MAP_W - 1 || y === MAP_H - 1) row.push(MAP_TILES.WALL);
-      else row.push(MAP_TILES.GRASS);
+      if (x === 0 || y === 0 || x === MAP_W - 1 || y === MAP_H - 1) row.push(T_WALL);
+      else row.push(T_GRASS);
     }
     map.push(row);
   }
   const walls = [
-    [5,5],[6,5],[5,6],
-    [10,8],[11,8],[12,8],
-    [20,10],[20,11],[20,12],
-    [30,20],[31,20],[32,20],
-    [15,20],[15,21],[15,22],
-    [25,5],[26,5],[27,5]
+    [5,5],[6,5],[5,6],[10,8],[11,8],[12,8],[20,10],[20,11],[20,12],
+    [30,20],[31,20],[32,20],[15,20],[15,21],[15,22],[25,5],[26,5],[27,5]
   ];
-  walls.forEach(([x,y]) => { if (map[y] && map[y][x] !== undefined) map[y][x] = MAP_TILES.WALL; });
-  for (let y = 14; y < 18; y++) for (let x = 24; x < 30; x++) map[y][x] = MAP_TILES.WATER;
-  for (let x = 3; x < 12; x++) map[15][x] = MAP_TILES.PATH;
-  for (let y = 3; y < 12; y++) map[y][8] = MAP_TILES.PATH;
+  walls.forEach(([x,y]) => { if (map[y] && map[y][x] !== undefined) map[y][x] = T_WALL; });
+  for (let y = 14; y < 18; y++) for (let x = 24; x < 30; x++) map[y][x] = T_WATER;
+  for (let x = 3; x < 12; x++) map[15][x] = T_PATH;
+  for (let y = 3; y < 12; y++) map[y][8] = T_PATH;
 }
 generateMap();
 
 function isWalkable(x, y) {
   if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) return false;
   const t = map[y][x];
-  return t === MAP_TILES.GRASS || t === MAP_TILES.PATH;
+  return t === T_GRASS || t === T_PATH;
 }
 
 // ============ STATE ============
 let player = null;
 let monsters = [];
 let drops = [];
-let floaters = []; // números de dano
+let floaters = [];
 let particles = [];
-let dummy = { x: 3, y: 3, hp: 1, maxHp: 1, isDummy: true, hitFlash: 0 };
+let dummy = { x: 3, y: 3, hitFlash: 0 };
 let running = false;
 
 // ============ INPUT ============
@@ -72,8 +72,12 @@ const keys = {};
 window.addEventListener('keydown', e => {
   const k = e.key.toLowerCase();
   keys[k] = true;
-  if (k === ' ') { e.preventDefault(); doAttack(); }
+  if (k === ' ' || k === 'enter') { e.preventDefault(); doAttack(); }
   if (k === 'e') doPickup();
+  if (k === 'arrowup' || k === 'w') { e.preventDefault(); tryMove(0,-1); }
+  if (k === 'arrowdown' || k === 's') { e.preventDefault(); tryMove(0,1); }
+  if (k === 'arrowleft' || k === 'a') { e.preventDefault(); tryMove(-1,0); }
+  if (k === 'arrowright' || k === 'd') { e.preventDefault(); tryMove(1,0); }
 });
 window.addEventListener('keyup', e => { keys[e.key.toLowerCase()] = false; });
 
@@ -81,9 +85,8 @@ document.querySelectorAll('#dpad button[data-dir]').forEach(btn => {
   btn.addEventListener('pointerdown', e => {
     e.preventDefault();
     if (!player) return;
-    const dir = btn.dataset.dir;
     const m = { up:[0,-1], down:[0,1], left:[-1,0], right:[1,0] };
-    const [dx, dy] = m[dir];
+    const [dx, dy] = m[btn.dataset.dir];
     tryMove(dx, dy);
   });
 });
@@ -103,12 +106,9 @@ document.querySelectorAll('.classBtn').forEach(btn => {
 
 // ============ CLASSES ============
 const CLASS_CONFIG = {
-  melee:  { name: 'Melee',   color: '#d9534f', hp: 120, atk: 9,  range: 1, targets: 8,
-            skillName: 'Sword', skill: 10, skillXp: 0, skillXpNext: 50 },
-  archer: { name: 'Arqueiro', color: '#5cb85c', hp: 90,  atk: 7,  range: 4, targets: 4,
-            skillName: 'Distance', skill: 10, skillXp: 0, skillXpNext: 50 },
-  mage:   { name: 'Mago',    color: '#5bc0de', hp: 70,  atk: 6,  range: 3, targets: 99,
-            skillName: 'Magic', skill: 10, skillXp: 0, skillXpNext: 50 }
+  melee:  { name: 'Melee',    color: '#d9534f', hp: 120, atk: 9, range: 1, targets: 8,  skillName: 'Sword' },
+  archer: { name: 'Arqueiro', color: '#5cb85c', hp: 90,  atk: 7, range: 4, targets: 4,  skillName: 'Distance' },
+  mage:   { name: 'Mago',     color: '#5bc0de', hp: 70,  atk: 6, range: 3, targets: 99, skillName: 'Magic' }
 };
 
 function startGame(classKey) {
@@ -118,9 +118,9 @@ function startGame(classKey) {
     classKey, name: cfg.name, color: cfg.color,
     hp: cfg.hp, maxHp: cfg.hp,
     atk: cfg.atk, range: cfg.range, targets: cfg.targets,
-    xp: 0, level: 1, xpToNext: 50,
-    skill: cfg.skill, skillXp: cfg.skillXp, skillXpNext: cfg.skillXpNext,
     skillName: cfg.skillName,
+    xp: 0, level: 1, xpToNext: 50,
+    skill: 10, skillXp: 0, skillXpNext: 50,
     gold: 0,
     attackCooldown: 0,
     hurtFlash: 0,
@@ -147,12 +147,9 @@ function spawnMonsters(n) {
       if (monsters.some(m => m.x === x && m.y === y)) continue;
       if (x === dummy.x && y === dummy.y) continue;
       monsters.push({
-        x, y,
-        hp: 28, maxHp: 28, atk: 4,
-        color: '#8b5a2b',
-        xpReward: 15, goldReward: 3,
-        hurtFlash: 0,
-        moveTimer: 0
+        x, y, hp: 28, maxHp: 28, atk: 4,
+        color: '#8b5a2b', xpReward: 15, goldReward: 3,
+        hurtFlash: 0
       });
       break;
     }
@@ -173,8 +170,6 @@ function tryMove(dx, dy) {
   if (!isWalkable(nx, ny)) return;
   if (monsters.some(m => m.x === nx && m.y === ny)) return;
   player.x = nx; player.y = ny;
-
-  // auto pick up drop no tile
   const idx = drops.findIndex(d => d.x === nx && d.y === ny);
   if (idx >= 0) doPickup();
 }
@@ -185,8 +180,7 @@ function doAttack() {
   if (now - player.attackCooldown < 380) return;
   player.attackCooldown = now;
 
-  let hitCount = 0;
-  let totalDmg = 0;
+  let hitCount = 0, totalDmg = 0;
 
   if (player.classKey === 'melee') {
     for (let dy = -1; dy <= 1; dy++) {
@@ -200,9 +194,9 @@ function doAttack() {
           floaters.push({ x: tx, y: ty, text: d, color: '#ff6b6b', life: 800, age: 0 });
         }
         if (tx === dummy.x && ty === dummy.y) {
-          hitDummy();
+          gainSkillXp(2); hitCount++;
+          dummy.hitFlash = 200;
           floaters.push({ x: tx, y: ty, text: '✓', color: '#f5c542', life: 700, age: 0 });
-          hitCount++;
         }
       }
     }
@@ -216,12 +210,12 @@ function doAttack() {
       const d = damageMonster(o.m);
       totalDmg += d; hitCount++;
       floaters.push({ x: o.m.x, y: o.m.y, text: d, color: '#8ee88e', life: 800, age: 0 });
-      particles.push({ x: player.x, y: player.y, tx: o.m.x, ty: o.m.y, life: 200, age: 0, color: '#c9ffc9' });
+      particles.push({ x: player.x+0.5, y: player.y+0.5, tx: o.m.x+0.5, ty: o.m.y+0.5, life: 200, age: 0, color: '#c9ffc9' });
     });
   } else if (player.classKey === 'mage') {
     const cx = player.x + player.facing.x * 2;
     const cy = player.y + player.facing.y * 2;
-    particles.push({ x: player.x, y: player.y, tx: cx, ty: cy, life: 250, age: 0, color: '#ffcc66' });
+    particles.push({ x: player.x+0.5, y: player.y+0.5, tx: cx+0.5, ty: cy+0.5, life: 250, age: 0, color: '#ffcc66' });
     monsters.forEach(m => {
       if (Math.abs(m.x - cx) <= 2 && Math.abs(m.y - cy) <= 2) {
         const d = damageMonster(m);
@@ -230,15 +224,15 @@ function doAttack() {
       }
     });
     if (Math.abs(dummy.x - cx) <= 2 && Math.abs(dummy.y - cy) <= 2) {
-      hitDummy();
+      gainSkillXp(2); dummy.hitFlash = 200;
     }
   }
 
   if (hitCount > 0) {
     gainSkillXp(hitCount * 3);
-    if (player.classKey === 'melee') logMsg(`Golpeou ${hitCount} alvo(s) — ${totalDmg} dano`);
-    else if (player.classKey === 'archer') logMsg(`Atirou em ${hitCount} — ${totalDmg} dano`);
-    else if (player.classKey === 'mage') logMsg(`Fogo! ${hitCount} alvo(s) — ${totalDmg} dano`);
+    logMsg(`Acertou ${hitCount} alvo(s) — ${totalDmg} dano`);
+  } else {
+    logMsg('Nenhum alvo no alcance');
   }
   updateHUD();
 }
@@ -256,8 +250,7 @@ function killMonster(mon) {
   if (idx >= 0) monsters.splice(idx, 1);
   gainXP(mon.xpReward);
   player.gold += mon.goldReward;
-  drops.push({ x: mon.x, y: mon.y, gold: mon.goldReward, life: 20000 });
-  // partículas de morte
+  drops.push({ x: mon.x, y: mon.y, gold: mon.goldReward });
   for (let i = 0; i < 8; i++) {
     particles.push({
       x: mon.x + 0.5, y: mon.y + 0.5,
@@ -267,10 +260,6 @@ function killMonster(mon) {
     });
   }
   spawnMonsters(1);
-}
-
-function hitDummy() {
-  gainSkillXp(2);
 }
 
 function doPickup() {
@@ -306,6 +295,7 @@ function gainSkillXp(amount) {
     player.skillXpNext = Math.floor(player.skillXpNext * 1.2);
     logMsg(`✦ ${player.skillName} avançou para ${player.skill}!`);
   }
+  updateHUD();
 }
 
 // ============ MONSTER AI ============
@@ -348,18 +338,11 @@ function updateMonsters() {
 // ============ RENDER ============
 let cameraX = 0, cameraY = 0;
 function updateCamera() {
-  const halfW = VIEW_TILES_X / 2;
-  const halfH = VIEW_TILES_Y / 2;
-  cameraX = Math.max(0, Math.min(MAP_W - VIEW_TILES_X, player.x - halfW + 0.5));
-  cameraY = Math.max(0, Math.min(MAP_H - VIEW_TILES_Y, player.y - halfH + 0.5));
+  cameraX = Math.max(0, Math.min(MAP_W - VIEW_TILES_X, player.x - VIEW_TILES_X/2 + 0.5));
+  cameraY = Math.max(0, Math.min(MAP_H - VIEW_TILES_Y, player.y - VIEW_TILES_Y/2 + 0.5));
 }
 
-const TILE_COLORS = {
-  0: '#3f7a3f', // grama
-  1: '#4a4a4a', // parede
-  2: '#2a4a7a', // água
-  3: '#8a7a5a'  // caminho
-};
+const TILE_COLORS = { 0:'#3f7a3f', 1:'#4a4a4a', 2:'#2a4a7a', 3:'#8a7a5a' };
 
 function draw(now) {
   ctx.fillStyle = '#111';
@@ -370,7 +353,6 @@ function draw(now) {
   const offX = -cameraX * TILE;
   const offY = -cameraY * TILE;
 
-  // tiles
   for (let y = Math.floor(cameraY); y < Math.ceil(cameraY + VIEW_TILES_Y); y++) {
     for (let x = Math.floor(cameraX); x < Math.ceil(cameraX + VIEW_TILES_X); x++) {
       if (x < 0 || y < 0 || x >= MAP_W || y >= MAP_H) continue;
@@ -378,64 +360,38 @@ function draw(now) {
       const px = x * TILE + offX, py = y * TILE + offY;
       ctx.fillStyle = TILE_COLORS[t];
       ctx.fillRect(px, py, TILE, TILE);
-
-      // textura leve
-      if (t === 0) {
-        ctx.fillStyle = 'rgba(255,255,255,0.03)';
-        ctx.fillRect(px, py, TILE, 2);
-      } else if (t === 2) {
-        ctx.fillStyle = 'rgba(255,255,255,0.08)';
-        ctx.fillRect(px + ((now/600 + x) % TILE), py + 6, 4, 2);
-      } else if (t === 1) {
-        ctx.fillStyle = 'rgba(0,0,0,0.3)';
-        ctx.fillRect(px, py + TILE - 4, TILE, 4);
-      }
+      if (t === 0) { ctx.fillStyle='rgba(255,255,255,0.03)'; ctx.fillRect(px, py, TILE, 2); }
+      else if (t === 1) { ctx.fillStyle='rgba(0,0,0,0.3)'; ctx.fillRect(px, py+TILE-4, TILE, 4); }
       ctx.strokeStyle = 'rgba(0,0,0,0.12)';
-      ctx.strokeRect(px + 0.5, py + 0.5, TILE - 1, TILE - 1);
+      ctx.strokeRect(px+0.5, py+0.5, TILE-1, TILE-1);
     }
   }
 
-  // drops
   drops.forEach(d => {
     const px = d.x * TILE + offX + TILE/2;
     const py = d.y * TILE + offY + TILE/2;
     ctx.fillStyle = '#f5c542';
-    ctx.beginPath();
-    ctx.arc(px, py, 5, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#8a6a10';
-    ctx.stroke();
+    ctx.beginPath(); ctx.arc(px, py, 5, 0, Math.PI*2); ctx.fill();
+    ctx.strokeStyle = '#8a6a10'; ctx.stroke();
   });
 
-  // dummy
-  drawEntity(dummy.x, dummy.y, offX, offY, '#a08050', 'D', 1, dummy.hitFlash, now);
-
-  // monsters
-  monsters.forEach(m => {
-    drawEntity(m.x, m.y, offX, offY, m.color, 'M', m.hp / m.maxHp, m.hurtFlash, now);
-  });
-
-  // player
+  drawEntity(dummy.x, dummy.y, offX, offY, '#a08050', 'D', 1, dummy.hitFlash);
+  monsters.forEach(m => drawEntity(m.x, m.y, offX, offY, m.color, 'M', m.hp/m.maxHp, m.hurtFlash));
   const flash = player.hurtFlash > 0 && Math.floor(now/80) % 2 === 0;
-  drawEntity(player.x, player.y, offX, offY, flash ? '#fff' : player.color, 'P',
-             player.hp / player.maxHp, 0, now, true);
+  drawEntity(player.x, player.y, offX, offY, flash ? '#fff' : player.color, 'P', player.hp/player.maxHp, 0);
 
-  // particles
   particles = particles.filter(p => {
     p.age += 16;
     const t = Math.min(1, p.age / p.life);
-    const x = (p.x + (p.tx - p.x) * t) * TILE + offX + TILE/2;
-    const y = (p.y + (p.ty - p.y) * t) * TILE + offY + TILE/2;
+    const x = (p.x + (p.tx - p.x) * t) * TILE + offX;
+    const y = (p.y + (p.ty - p.y) * t) * TILE + offY;
     ctx.globalAlpha = 1 - t;
     ctx.fillStyle = p.color;
-    ctx.beginPath();
-    ctx.arc(x, y, 4 * (1-t) + 1, 0, Math.PI*2);
-    ctx.fill();
+    ctx.beginPath(); ctx.arc(x, y, 4*(1-t)+1, 0, Math.PI*2); ctx.fill();
     ctx.globalAlpha = 1;
     return p.age < p.life;
   });
 
-  // floaters (dano)
   floaters = floaters.filter(f => {
     f.age += 16;
     const t = f.age / f.life;
@@ -444,63 +400,38 @@ function draw(now) {
     ctx.globalAlpha = 1 - t;
     ctx.fillStyle = f.color;
     ctx.font = 'bold 14px monospace';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.strokeStyle = '#000';
-    ctx.lineWidth = 3;
-    ctx.strokeText(f.text, px, py);
-    ctx.fillText(f.text, px, py);
+    ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+    ctx.strokeStyle = '#000'; ctx.lineWidth = 3;
+    ctx.strokeText(f.text, px, py); ctx.fillText(f.text, px, py);
     ctx.globalAlpha = 1;
     return f.age < f.life;
   });
 
-  // decair flash de monstros/dummy
   monsters.forEach(m => { if (m.hurtFlash > 0) m.hurtFlash -= 16; });
   if (dummy.hitFlash > 0) dummy.hitFlash -= 16;
   if (player.hurtFlash > 0) player.hurtFlash -= 16;
 }
 
-function drawEntity(x, y, offX, offY, color, letter, hpRatio, flash, now, isPlayer) {
-  const px = x * TILE + offX;
-  const py = y * TILE + offY;
+function drawEntity(x, y, offX, offY, color, letter, hpRatio, flash) {
+  const px = x * TILE + offX, py = y * TILE + offY;
   const flashing = flash && flash > 0;
-
-  // sombra
   ctx.fillStyle = 'rgba(0,0,0,0.35)';
-  ctx.beginPath();
-  ctx.ellipse(px + TILE/2, py + TILE - 4, TILE/3, 4, 0, 0, Math.PI*2);
-  ctx.fill();
-
-  // corpo
+  ctx.beginPath(); ctx.ellipse(px+TILE/2, py+TILE-4, TILE/3, 4, 0, 0, Math.PI*2); ctx.fill();
   ctx.fillStyle = flashing ? '#fff' : color;
-  ctx.fillRect(px + 4, py + 3, TILE - 8, TILE - 7);
-
-  // brilho superior
-  if (!flashing) {
-    ctx.fillStyle = 'rgba(255,255,255,0.2)';
-    ctx.fillRect(px + 4, py + 3, TILE - 8, 3);
-  }
-
-  // letra
-  ctx.fillStyle = '#fff';
-  ctx.font = 'bold 14px monospace';
-  ctx.textAlign = 'center';
-  ctx.textBaseline = 'middle';
-  ctx.strokeStyle = 'rgba(0,0,0,0.6)';
-  ctx.lineWidth = 2;
-  ctx.strokeText(letter, px + TILE/2, py + TILE/2);
-  ctx.fillText(letter, px + TILE/2, py + TILE/2);
-
-  // barra de vida
+  ctx.fillRect(px+4, py+3, TILE-8, TILE-7);
+  if (!flashing) { ctx.fillStyle='rgba(255,255,255,0.2)'; ctx.fillRect(px+4, py+3, TILE-8, 3); }
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 14px monospace';
+  ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+  ctx.strokeStyle = 'rgba(0,0,0,0.6)'; ctx.lineWidth = 2;
+  ctx.strokeText(letter, px+TILE/2, py+TILE/2); ctx.fillText(letter, px+TILE/2, py+TILE/2);
   if (hpRatio !== undefined && hpRatio < 1) {
-    ctx.fillStyle = '#000';
-    ctx.fillRect(px + 3, py - 2, TILE - 6, 4);
+    ctx.fillStyle = '#000'; ctx.fillRect(px+3, py-2, TILE-6, 4);
     ctx.fillStyle = hpRatio > 0.5 ? '#4ade80' : hpRatio > 0.25 ? '#fbbf24' : '#ef4444';
-    ctx.fillRect(px + 3, py - 2, (TILE - 6) * hpRatio, 4);
+    ctx.fillRect(px+3, py-2, (TILE-6)*hpRatio, 4);
   }
 }
 
-// ============ HUD ============
+// ============ HUD & LOG ============
 function updateHUD() {
   if (!player) return;
   const hpPct = Math.max(0, player.hp / player.maxHp) * 100;
@@ -509,4 +440,43 @@ function updateHUD() {
   hud.innerHTML = `
     <div class="name">${player.name} · Nv ${player.level}</div>
     <div class="row"><span>HP</span><span>${Math.max(0,player.hp)}/${player.maxHp}</span></div>
-    <div class="barwrap"><div class="bar hp" style="width:${
+    <div class="barwrap"><div class="bar hp" style="width:${hpPct}%"></div></div>
+    <div class="row"><span>XP</span><span>${player.xp}/${player.xpToNext}</span></div>
+    <div class="barwrap"><div class="bar xp" style="width:${xpPct}%"></div></div>
+    <div class="row"><span>${player.skillName}</span><span>${player.skill}</span></div>
+    <div class="barwrap"><div class="bar sk" style="width:${skPct}%"></div></div>
+    <div class="row"><span>Gold</span><span style="color:#f5c542">${player.gold}</span></div>
+  `;
+}
+
+let logTimer = null;
+function logMsg(msg) {
+  logEl.textContent = msg;
+  logEl.classList.add('show');
+  if (logTimer) clearTimeout(logTimer);
+  logTimer = setTimeout(() => logEl.classList.remove('show'), 1800);
+}
+
+// ============ SHOW/HIDE CONTROLS BY DEVICE ============
+function setupDeviceUI() {
+  if (IS_TOUCH) {
+    dpad.style.display = 'grid';
+    controls.style.display = 'flex';
+  } else {
+    dpad.style.display = 'none';
+    controls.style.display = 'flex'; // ainda mostra botões para mouse
+    logMsg('Use setas/WASD para andar · Espaço para atacar · E para coletar');
+  }
+}
+setupDeviceUI();
+
+// ============ LOOP ============
+let lastTime = 0;
+function loop(t) {
+  if (running && player) updateMonsters();
+  draw(t || 0);
+  requestAnimationFrame(loop);
+}
+requestAnimationFrame(loop);
+
+})();
